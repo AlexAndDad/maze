@@ -1,3 +1,7 @@
+#include "clear_screen.hpp"
+#include "character.hpp"
+#include "position.hpp"
+
 #include <iostream>
 #include <array>
 #include <string>
@@ -6,61 +10,14 @@
 #include <vector>
 
 
-#if defined(__unix__) || defined(__APPLE__)
-
-#include <stdio.h>
-
-void clear_screen(void) {
-    printf("\x1B[2J");
-}
-
-#elif defined(_WIN32)
-
-#include <windows.h>
-
-void clear_screen(void) {
-    HANDLE hOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-    COORD topLeft = {0, 0};
-    DWORD dwCount, dwSize;
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
-    GetConsoleScreenBufferInfo(hOutput, &csbi);
-    dwSize = csbi.dwSize.X * csbi.dwSize.Y;
-    FillConsoleOutputCharacter(hOutput, 0x20, dwSize, topLeft, &dwCount);
-    FillConsoleOutputAttribute(hOutput, 0x07, dwSize, topLeft, &dwCount);
-    SetConsoleCursorPosition(hStdOut, topLeft);
-}
-
-#endif /* __unix__ */
-
-
-enum character {
-    nothing,
-    goblin
-};
-
-struct position {
-    std::size_t x;
-    std::size_t y;
-
-    bool operator==(position const &other) const {
-        return x == other.x and y == other.y;
-    }
-
-    bool operator!=(position const &other) const {
-        return not(*this == other);
-    }
-};
-
-struct delta {
-    int x;
-    int y;
-};
-
-
 struct maze {
     static constexpr std::size_t width = 10;
     static constexpr std::size_t height = 10;
     static constexpr std::size_t extent = width * height;
+
+    static constexpr bounding_box bounds() {
+        return bounding_box {position {0, 0}, delta {width, height}};
+    }
 
     maze()
             : maze_data_{} {}
@@ -141,48 +98,45 @@ struct world {
     }
 
     void move_goblin(delta d) {
-        auto is_positive = [](int n) { return n > 0; };
-        auto is_negative = [](int n) { return n < 0; };
         auto append_message = [&](auto &&s) {
             if (not this->recent_message_.empty())
                 this->recent_message_ += ", ";
             this->recent_message_ += s;
         };
 
-        auto old_pos = goblin_pos_;
         recent_message_.clear();
-        auto x_mag = std::size_t(std::abs(d.x));
-        if (is_negative(d.x)) {
-            if (x_mag > goblin_pos_.x) {
-                append_message("that move would take me into the left wall");
-            } else {
-                goblin_pos_.x -= x_mag;
-            }
-        } else if (is_positive(d.x)) {
-            if (x_mag + goblin_pos_.x >= maze_.width) {
+        bool move_error = false;
+        auto new_pos = goblin_pos_ + d;
+        switch (test_limits_x(new_pos, maze_.bounds())) {
+            case 1:
                 append_message("that move would take me into the right wall");
-            } else {
-                goblin_pos_.x += x_mag;
-            }
+                move_error = true;
+                break;
+            case -1:
+                append_message("that move would take me into the left wall");
+                move_error = true;
+                break;
+            default:
+                break;
         }
 
-        auto y_mag = std::size_t(std::abs(d.y));
-        if (is_negative(d.y)) {
-            if (y_mag > goblin_pos_.y) {
-                append_message("that move would take me into the top wall");
-            } else {
-                goblin_pos_.y -= y_mag;
-            }
-        } else if (is_positive(d.y)) {
-            if (y_mag + goblin_pos_.y >= maze_.height) {
+        switch (test_limits_y(new_pos, maze_.bounds())) {
+            case 1:
                 append_message("that move would take me into the bottom wall");
-            } else {
-                goblin_pos_.y += y_mag;
-            }
+                move_error = true;
+                break;
+            case -1:
+                append_message("that move would take me into the top wall");
+                move_error = true;
+                break;
+            default:
+                break;
         }
-        if (goblin_pos_ != old_pos) {
-            maze_.at(old_pos) = nothing;
-            maze_.at(goblin_pos_) = goblin;
+
+        if (not move_error and new_pos != goblin_pos_) {
+            maze_.at(goblin_pos_) = nothing;
+            maze_.at(new_pos) = goblin;
+            goblin_pos_ = new_pos;
         }
 
     }
@@ -205,8 +159,8 @@ struct command_iterpreter {
             {"down",  [&] { this->world_.move_goblin(delta {0, 1}); }},
             {"left",  [&] { this->world_.move_goblin(delta {-1, 0}); }},
             {"right", [&] { this->world_.move_goblin(delta {1, 0}); }},
-            {"quit", [&] { this->quit_signal_ = true;}},
-            {"help", [&] { this->help(); }}
+            {"quit",  [&] { this->quit_signal_ = true; }},
+            {"help",  [&] { this->help(); }}
     },
               quit_signal_{false} {}
 
@@ -231,12 +185,10 @@ struct command_iterpreter {
         return result;
     }
 
-    void help()
-    {
-        const char* sep = "";
+    void help() {
+        const char *sep = "";
         std::string msg = "commands I understand are: ";
-        for (auto&& e : entries_)
-        {
+        for (auto &&e : entries_) {
             msg += sep;
             msg += e.command;
             sep = ", ";
@@ -267,7 +219,6 @@ struct command_iterpreter {
 int main() {
     world the_world;
     command_iterpreter interp{the_world};
-
 
     while (not interp.has_quit()) {
         redraw(the_world);
